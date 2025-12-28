@@ -25,9 +25,15 @@
 #include "../../SDL_internal.h"
 #include "../SDL_sysvideo.h"
 
-#include "GLES/gl.h"
 #include "EGL/egl.h"
 #include "EGL/eglext.h"
+
+/* Only include GLES headers when building with OpenGL ES */
+#if defined(SDL_VIDEO_OPENGL_ES2)
+#include <GLES2/gl2.h>
+#elif defined(SDL_VIDEO_OPENGL_ES)
+#include <GLES/gl.h>
+#endif
 
 typedef struct SDL_WindowData
 {
