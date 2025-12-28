@@ -40,6 +40,14 @@
 #include "../../events/SDL_mouse_c.h"
 #include "../../events/SDL_keyboard_c.h"
 
+#ifndef SDL_VIDEO_OPENGL_EGL
+#include <linux/fb.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 static void
 FB_PumpEvents(_THIS)
 {
@@ -55,6 +63,19 @@ FB_Destroy(SDL_VideoDevice * device)
         device->driverdata = NULL;
     }
 }
+
+#ifndef SDL_VIDEO_OPENGL_EGL
+typedef struct FB_SoftwareFB {
+    int fb_fd;
+    void *fb_mem;
+    size_t fb_memlen;
+    int fb_pitch;
+    int fb_bpp;     
+    int fb_width;
+    int fb_height;
+    void *backbuffer;
+} FB_SoftwareFB;
+#endif
 
 static SDL_VideoDevice *
 FB_Create()
@@ -104,8 +125,13 @@ FB_Create()
     device->GL_GetSwapInterval = FB_GLES_GetSwapInterval;
     device->GL_SwapWindow = FB_GLES_SwapWindow;
     device->GL_DeleteContext = FB_GLES_DeleteContext;
+#else
+    /* Software framebuffer hooks */
+    device->CreateWindowFramebuffer = FB_CreateWindowFramebuffer;
+    device->UpdateWindowFramebuffer = FB_UpdateWindowFramebuffer;
+    device->DestroyWindowFramebuffer = FB_DestroyWindowFramebuffer;
 #endif
-
+                
     device->PumpEvents = FB_PumpEvents;
 
     return device;
@@ -129,8 +155,8 @@ FB_VideoInit(_THIS)
     SDL_zero(current_mode);
 
     /* XXX: Hardcoded for now */
-    current_mode.w = 320;
-    current_mode.h = 240;
+    current_mode.w = 640;
+    current_mode.h = 480;
     current_mode.refresh_rate = 60;
     current_mode.format = SDL_PIXELFORMAT_RGB565;
 
@@ -285,6 +311,109 @@ FB_SetWindowGrab(_THIS, SDL_Window * window, SDL_bool grabbed)
 {
 
 }
+
+#ifndef SDL_VIDEO_OPENGL_EGL
+/* Software framebuffer implementation */
+int FB_CreateWindowFramebuffer(_THIS, SDL_Window * window, Uint32 * format, void ** pixels, int * pitch)
+{
+    const char *fbpath = SDL_getenv("SDL_FBDEV");
+    if (!fbpath) fbpath = "/dev/fb0";
+
+    FB_SoftwareFB *fb = (FB_SoftwareFB *)SDL_calloc(1, sizeof(FB_SoftwareFB));
+    if (!fb) {
+        return SDL_OutOfMemory();
+    }
+
+    struct fb_var_screeninfo vinfo;
+    struct fb_fix_screeninfo finfo;
+
+    fb->fb_fd = open(fbpath, O_RDWR);
+    if (fb->fb_fd < 0) {
+        SDL_free(fb);
+        return SDL_SetError("fbdev: could not open %s", fbpath);
+    }
+
+    if (ioctl(fb->fb_fd, FBIOGET_FSCREENINFO, &finfo) < 0 ||
+        ioctl(fb->fb_fd, FBIOGET_VSCREENINFO, &vinfo) < 0) {
+        close(fb->fb_fd);
+        SDL_free(fb);
+        return SDL_SetError("fbdev: ioctl failed");
+    }
+
+    fb->fb_width = vinfo.xres;
+    fb->fb_height = vinfo.yres;
+    fb->fb_bpp = vinfo.bits_per_pixel;
+    fb->fb_pitch = finfo.line_length;
+
+    fb->fb_memlen = finfo.smem_len;
+    fb->fb_mem = mmap(0, fb->fb_memlen, PROT_READ | PROT_WRITE, MAP_SHARED, fb->fb_fd, 0);
+    if (fb->fb_mem == MAP_FAILED) {
+        close(fb->fb_fd);
+        SDL_free(fb);
+        return SDL_SetError("fbdev: mmap failed");
+    }
+
+    /* Choose a software format matching framebuffer */
+    if (fb->fb_bpp == 16) {
+        *format = SDL_PIXELFORMAT_RGB565;
+    } else if (fb->fb_bpp == 32) {
+        *format = SDL_PIXELFORMAT_ARGB8888;
+    } else {
+        /* Default fallback */
+        *format = SDL_PIXELFORMAT_RGB565;
+    }
+
+    int bppbytes = SDL_BYTESPERPIXEL(*format);
+    *pitch = window->w * bppbytes;
+
+    fb->backbuffer = SDL_calloc(window->h, *pitch);
+    if (!fb->backbuffer) {
+        munmap(fb->fb_mem, fb->fb_memlen);
+        close(fb->fb_fd);
+        SDL_free(fb);
+        return SDL_OutOfMemory();
+    }
+
+    *pixels = fb->backbuffer;
+
+    window->driverdata = fb; /* reuse driverdata to store our fb info */
+
+    return 0;
+}
+
+int FB_UpdateWindowFramebuffer(_THIS, SDL_Window * window, const SDL_Rect * rects, int numrects)
+{
+    FB_SoftwareFB *fb = (FB_SoftwareFB *)window->driverdata;
+    if (!fb || !fb->backbuffer || !fb->fb_mem) {
+        return SDL_SetError("fbdev: no framebuffer");
+    }
+
+    /* Blit backbuffer to framebuffer (simple full copy) */
+    int copyrows = SDL_min(window->h, fb->fb_height);
+    int copycols_bytes = SDL_min(window->w * (fb->fb_bpp/8), fb->fb_pitch);
+
+    Uint8 *src = (Uint8 *)fb->backbuffer;
+    Uint8 *dst = (Uint8 *)fb->fb_mem;
+
+    for (int y = 0; y < copyrows; ++y) {
+        SDL_memcpy(dst + y * fb->fb_pitch, src + y * (window->w * (fb->fb_bpp/8)), copycols_bytes);
+    }
+
+    return 0;
+}
+
+void FB_DestroyWindowFramebuffer(_THIS, SDL_Window * window)
+{
+    FB_SoftwareFB *fb = (FB_SoftwareFB *)window->driverdata;
+    if (!fb) return;
+
+    if (fb->backbuffer) SDL_free(fb->backbuffer);
+    if (fb->fb_mem && fb->fb_memlen) munmap(fb->fb_mem, fb->fb_memlen);
+    if (fb->fb_fd >= 0) close(fb->fb_fd);
+    SDL_free(fb);
+    window->driverdata = NULL;
+}
+#endif
 
 /*****************************************************************************/
 /* SDL Window Manager function                                               */
