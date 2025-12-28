@@ -46,6 +46,11 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <unistd.h>
+
+/* Forward declarations for software framebuffer hooks */
+int FB_CreateWindowFramebuffer(_THIS, SDL_Window * window, Uint32 * format, void ** pixels, int * pitch);
+int FB_UpdateWindowFramebuffer(_THIS, SDL_Window * window, const SDL_Rect * rects, int numrects);
+void FB_DestroyWindowFramebuffer(_THIS, SDL_Window * window);
 #endif
 
 static void
@@ -317,15 +322,17 @@ FB_SetWindowGrab(_THIS, SDL_Window * window, SDL_bool grabbed)
 int FB_CreateWindowFramebuffer(_THIS, SDL_Window * window, Uint32 * format, void ** pixels, int * pitch)
 {
     const char *fbpath = SDL_getenv("SDL_FBDEV");
+    FB_SoftwareFB *fb;
+    struct fb_var_screeninfo vinfo;
+    struct fb_fix_screeninfo finfo;
+    int bppbytes;
+
     if (!fbpath) fbpath = "/dev/fb0";
 
-    FB_SoftwareFB *fb = (FB_SoftwareFB *)SDL_calloc(1, sizeof(FB_SoftwareFB));
+    fb = (FB_SoftwareFB *)SDL_calloc(1, sizeof(FB_SoftwareFB));
     if (!fb) {
         return SDL_OutOfMemory();
     }
-
-    struct fb_var_screeninfo vinfo;
-    struct fb_fix_screeninfo finfo;
 
     fb->fb_fd = open(fbpath, O_RDWR);
     if (fb->fb_fd < 0) {
@@ -363,7 +370,7 @@ int FB_CreateWindowFramebuffer(_THIS, SDL_Window * window, Uint32 * format, void
         *format = SDL_PIXELFORMAT_RGB565;
     }
 
-    int bppbytes = SDL_BYTESPERPIXEL(*format);
+    bppbytes = SDL_BYTESPERPIXEL(*format);
     *pitch = window->w * bppbytes;
 
     fb->backbuffer = SDL_calloc(window->h, *pitch);
@@ -384,16 +391,21 @@ int FB_CreateWindowFramebuffer(_THIS, SDL_Window * window, Uint32 * format, void
 int FB_UpdateWindowFramebuffer(_THIS, SDL_Window * window, const SDL_Rect * rects, int numrects)
 {
     FB_SoftwareFB *fb = (FB_SoftwareFB *)window->driverdata;
+    int copyrows;
+    int copycols_bytes;
+    Uint8 *src;
+    Uint8 *dst;
+
     if (!fb || !fb->backbuffer || !fb->fb_mem) {
         return SDL_SetError("fbdev: no framebuffer");
     }
 
     /* Blit backbuffer to framebuffer (simple full copy) */
-    int copyrows = SDL_min(window->h, fb->fb_height);
-    int copycols_bytes = SDL_min(window->w * (fb->fb_bpp/8), fb->fb_pitch);
+    copyrows = SDL_min(window->h, fb->fb_height);
+    copycols_bytes = SDL_min(window->w * (fb->fb_bpp/8), fb->fb_pitch);
 
-    Uint8 *src = (Uint8 *)fb->backbuffer;
-    Uint8 *dst = (Uint8 *)fb->fb_mem;
+    src = (Uint8 *)fb->backbuffer;
+    dst = (Uint8 *)fb->fb_mem;
 
     for (int y = 0; y < copyrows; ++y) {
         SDL_memcpy(dst + y * fb->fb_pitch, src + y * (window->w * (fb->fb_bpp/8)), copycols_bytes);
