@@ -200,7 +200,82 @@ FB_GetDisplayModes(_THIS, SDL_VideoDisplay * display)
 int
 FB_SetDisplayMode(_THIS, SDL_VideoDisplay * display, SDL_DisplayMode * mode)
 {
+#if defined(SDL_VIDEO_OPENGL_EGL)
+    /* EGL path: leave mode setting to EGL/display manager, accept mode */
+    display->current_mode = *mode;
     return 0;
+#else
+    const char *fbpath = SDL_getenv("SDL_FBDEV");
+    int fb_fd;
+    struct fb_var_screeninfo vinfo;
+    struct fb_fix_screeninfo finfo;
+
+    if (!fbpath) fbpath = "/dev/fb0";
+
+    fb_fd = open(fbpath, O_RDWR);
+    if (fb_fd < 0) {
+        return SDL_SetError("fbdev: could not open %s for mode set", fbpath);
+    }
+
+    if (ioctl(fb_fd, FBIOGET_FSCREENINFO, &finfo) < 0 ||
+        ioctl(fb_fd, FBIOGET_VSCREENINFO, &vinfo) < 0) {
+        close(fb_fd);
+        return SDL_SetError("fbdev: query screeninfo failed");
+    }
+
+    /* Request resolution change */
+    vinfo.xres = mode->w;
+    vinfo.yres = mode->h;
+    vinfo.xres_virtual = mode->w;
+    vinfo.yres_virtual = mode->h;
+    vinfo.activate = FB_ACTIVATE_NOW;
+
+    /* Map SDL format to bits_per_pixel and channel masks */
+    switch (mode->format) {
+    case SDL_PIXELFORMAT_RGB565:
+        vinfo.bits_per_pixel = 16;
+        vinfo.red.offset = 11; vinfo.red.length = 5;
+        vinfo.green.offset = 5; vinfo.green.length = 6;
+        vinfo.blue.offset = 0; vinfo.blue.length = 5;
+        vinfo.transp.offset = 0; vinfo.transp.length = 0;
+        break;
+    case SDL_PIXELFORMAT_ARGB8888:
+    case SDL_PIXELFORMAT_XRGB8888:
+        vinfo.bits_per_pixel = 32;
+        vinfo.red.offset = 16; vinfo.red.length = 8;
+        vinfo.green.offset = 8; vinfo.green.length = 8;
+        vinfo.blue.offset = 0; vinfo.blue.length = 8;
+        /* transparency may be unused */
+        vinfo.transp.offset = 24; vinfo.transp.length = (mode->format == SDL_PIXELFORMAT_ARGB8888) ? 8 : 0;
+        break;
+    default:
+        /* Fallback: keep current bpp */
+        break;
+    }
+
+    if (ioctl(fb_fd, FBIOPUT_VSCREENINFO, &vinfo) < 0) {
+        close(fb_fd);
+        return SDL_SetError("fbdev: mode set failed");
+    }
+
+    /* Re-read info to confirm */
+    if (ioctl(fb_fd, FBIOGET_FSCREENINFO, &finfo) == 0 &&
+        ioctl(fb_fd, FBIOGET_VSCREENINFO, &vinfo) == 0) {
+        SDL_DisplayMode applied;
+        SDL_zero(applied);
+        applied.w = vinfo.xres;
+        applied.h = vinfo.yres;
+        applied.refresh_rate = display->current_mode.refresh_rate;
+        applied.format = (vinfo.bits_per_pixel == 16) ? SDL_PIXELFORMAT_RGB565 : SDL_PIXELFORMAT_ARGB8888;
+        display->current_mode = applied;
+    } else {
+        /* keep requested as current */
+        display->current_mode = *mode;
+    }
+
+    close(fb_fd);
+    return 0;
+#endif
 }
 
 int
