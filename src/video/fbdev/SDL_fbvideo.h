@@ -25,8 +25,11 @@
 #include "../../SDL_internal.h"
 #include "../SDL_sysvideo.h"
 
+/* Only include EGL when building with EGL support */
+#if SDL_VIDEO_OPENGL_EGL
 #include "EGL/egl.h"
 #include "EGL/eglext.h"
+#endif
 
 /* Only include GLES headers when building with OpenGL ES */
 #if defined(SDL_VIDEO_OPENGL_ES2)

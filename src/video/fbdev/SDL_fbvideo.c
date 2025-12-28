@@ -34,7 +34,9 @@
 #endif
 
 #include "SDL_fbvideo.h"
+#if SDL_VIDEO_OPENGL_EGL
 #include "SDL_fbopengles.h"
+#endif
 #include "../../events/SDL_mouse_c.h"
 #include "../../events/SDL_keyboard_c.h"
 
@@ -92,6 +94,7 @@ FB_Create()
     device->SetWindowGrab = FB_SetWindowGrab;
     device->DestroyWindow = FB_DestroyWindow;
     device->GetWindowWMInfo = FB_GetWindowWMInfo;
+#if SDL_VIDEO_OPENGL_EGL
     device->GL_LoadLibrary = FB_GLES_LoadLibrary;
     device->GL_GetProcAddress = FB_GLES_GetProcAddress;
     device->GL_UnloadLibrary = FB_GLES_UnloadLibrary;
@@ -101,6 +104,7 @@ FB_Create()
     device->GL_GetSwapInterval = FB_GLES_GetSwapInterval;
     device->GL_SwapWindow = FB_GLES_SwapWindow;
     device->GL_DeleteContext = FB_GLES_DeleteContext;
+#endif
 
     device->PumpEvents = FB_PumpEvents;
 
@@ -185,7 +189,8 @@ FB_CreateWindow(_THIS, SDL_Window * window)
     window->w = display->desktop_mode.w;
     window->h = display->desktop_mode.h;
 
-    /* OpenGL ES is the law here, buddy */
+#if SDL_VIDEO_OPENGL_EGL
+    /* OpenGL ES via EGL */
     window->flags |= SDL_WINDOW_OPENGL;
 
     if (!_this->egl_data) {
@@ -198,6 +203,7 @@ FB_CreateWindow(_THIS, SDL_Window * window)
     if (wdata->egl_surface == EGL_NO_SURFACE) {
         return SDL_SetError("Could not create GLES window surface");
     }
+#endif
 
     /* Setup driver data for this window */
     window->driverdata = wdata;
@@ -217,10 +223,12 @@ FB_DestroyWindow(_THIS, SDL_Window * window)
 
     if(window->driverdata) {
         data = (SDL_WindowData *) window->driverdata;
+#if SDL_VIDEO_OPENGL_EGL
         if (data->egl_surface != EGL_NO_SURFACE) {
             SDL_EGL_DestroySurface(_this, data->egl_surface);
             data->egl_surface = EGL_NO_SURFACE;
         }
+#endif
         SDL_free(window->driverdata);
         window->driverdata = NULL;
     }
